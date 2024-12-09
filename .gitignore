@@ -1,0 +1,45 @@
+# Ignore Mac system files
+.DS_Store
+
+# Ignore node_modules (Node.js)
+node_modules/
+
+# Ignore Python bytecode files
+__pycache__/
+*.pyc
+
+# Ignore Java and Kotlin build artifacts
+/build/
+/out/
+
+# Ignore Gradle wrapper files
+.gradle/
+*.gradle
+
+# Ignore IntelliJ project files
+.idea/
+*.iml
+
+# Ignore Visual Studio Code settings
+.vscode/
+
+# Ignore log files
+*.log
+
+# Ignore OS generated files
+Thumbs.db
+ehthumbs.db
+
+# Ignore environment variable files
+.env
+
+# Ignore compiled binaries
+*.class
+*.exe
+*.dll
+
+# Ignore archives and compressed files
+*.zip
+*.tar.gz
+*.rar
+
