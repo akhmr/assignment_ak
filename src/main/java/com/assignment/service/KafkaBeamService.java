@@ -30,111 +30,98 @@ import jakarta.annotation.PostConstruct;
 
 @Service
 public class KafkaBeamService {
-	
+
 	private static final Logger logger = LoggerFactory.getLogger(KafkaBeamService.class);
 
+	@Value("${spring.kafka.topic.input}")
+	private String inputTopic;
 
-    @Value("${spring.kafka.topic.input}")
-    private String inputTopic;
+	@Value("${spring.kafka.topic.even}")
+	private String evenTopic;
 
-    @Value("${spring.kafka.topic.even}")
-    private String evenTopic;
+	@Value("${spring.kafka.topic.odd}")
+	private String oddTopic;
 
-    @Value("${spring.kafka.topic.odd}")
-    private String oddTopic;
+	@Value("${spring.kafka.bootstrap-servers}")
+	private String bootstrapServers;
 
-    @Value("${spring.kafka.bootstrap-servers}")
-    private String bootstrapServers;
+	@PostConstruct
+	public void runPipeline() {
+		PipelineOptions options = PipelineOptionsFactory.create();
+		options.setRunner(DirectRunner.class);
+		Pipeline pipeline = Pipeline.create(options);
 
-    @PostConstruct
-    public void runPipeline() {
-        PipelineOptions options = PipelineOptionsFactory.create();
-        options.setRunner(DirectRunner.class);
+		PCollection<String> messages = pipeline
+				.apply(KafkaIO.<String, String>read().withBootstrapServers(bootstrapServers).withTopic(inputTopic)
+						.withKeyDeserializer(StringDeserializer.class).withValueDeserializer(StringDeserializer.class)
+						.withoutMetadata())
+				.apply(MapElements.into(TypeDescriptor.of(String.class)).via((kafkaRecord) -> kafkaRecord.getValue()));
 
-        Pipeline pipeline = Pipeline.create(options);
+		PCollection<String> evenMessages = messages.apply("FilterEvenLength", ParDo.of(new EvenLengthFilterFn()));
+		PCollection<String> oddMessages = messages.apply("FilterOddLength", ParDo.of(new OddLengthFilterFn()));
 
-        PCollection<String> messages = pipeline
-            .apply(KafkaIO.<String, String>read()
-                .withBootstrapServers(bootstrapServers)
-                .withTopic(inputTopic)
-                .withKeyDeserializer(StringDeserializer.class)
-                .withValueDeserializer(StringDeserializer.class)
-                .withoutMetadata())
-            .apply(MapElements
-                .into(TypeDescriptor.of(String.class))
-                .via((kafkaRecord) -> kafkaRecord.getValue()));
+		evenMessages.apply("WriteEvenMessagesToKafka",
+				KafkaIO.<String, String>write().withBootstrapServers(bootstrapServers).withTopic(evenTopic)
+						.withKeySerializer(StringSerializer.class).withValueSerializer(StringSerializer.class)
+						.values());
 
-        PCollection<String> evenMessages = messages.apply("FilterEvenLength", ParDo.of(new EvenLengthFilterFn()));
+		oddMessages.apply("WriteOddMessagesToKafka",
+				KafkaIO.<String, String>write().withBootstrapServers(bootstrapServers).withTopic(oddTopic)
+						.withKeySerializer(StringSerializer.class).withValueSerializer(StringSerializer.class)
+						.values());
 
-        PCollection<String> oddMessages = messages.apply("FilterOddLength", ParDo.of(new OddLengthFilterFn()));
+		new Thread(() -> pipeline.run().waitUntilFinish()).start();
+	}
 
-        evenMessages.apply("WriteEvenMessagesToKafka", KafkaIO.<String, String>write()
-            .withBootstrapServers(bootstrapServers)
-            .withTopic(evenTopic)
-            .withKeySerializer(StringSerializer.class)
-            .withValueSerializer(StringSerializer.class)
-            .values());
+	public static class EvenLengthFilterFn extends DoFn<String, String> {
+		@ProcessElement
+		public void processElement(@Element String message, OutputReceiver<String> out) {
 
-        oddMessages.apply("WriteOddMessagesToKafka", KafkaIO.<String, String>write()
-            .withBootstrapServers(bootstrapServers)
-            .withTopic(oddTopic)
-            .withKeySerializer(StringSerializer.class)
-            .withValueSerializer(StringSerializer.class)
-            .values());
-
-        new Thread(() -> pipeline.run().waitUntilFinish()).start();
-    }
-
-    public static class EvenLengthFilterFn extends DoFn<String, String> {
-        @ProcessElement
-        public void processElement(@Element String message, OutputReceiver<String> out) {
-        	
-        	ObjectMapper objectMapper = new ObjectMapper();
-        	try {
+			ObjectMapper objectMapper = new ObjectMapper();
+			try {
 				Person person = objectMapper.readValue(message, Person.class);
-				
 				int age = calculateAge(person.getDateOfBirth());
-                
+
 				if (age != -1 && age % 2 == 0) {
-	                out.output("Age is even and age is ="+age);
-	            }
+					out.output("Age is even and age is =" + age);
+				}
 			} catch (Exception e) {
 				e.printStackTrace();
 				out.output("exception occured");
 			}
-            
-        }
 
-    }
-    
-    private static int calculateAge(String dateOfBirth) {
-		try {
-            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd/MM/yyyy");
-            LocalDate dob = LocalDate.parse(dateOfBirth, formatter);
-            return Period.between(dob, LocalDate.now()).getYears();
-        } catch (Exception e) {
-        	logger.error("Error {}",e);
-            return -1; // Return -1 if parsing fails
-        }
+		}
+
 	}
 
-    public static class OddLengthFilterFn extends DoFn<String, String> {
-        @ProcessElement
-        public void processElement(@Element String message, OutputReceiver<String> out) {
-        	ObjectMapper objectMapper = new ObjectMapper();
-        	try {
+	private static int calculateAge(String dateOfBirth) {
+		try {
+			DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+			LocalDate dob = LocalDate.parse(dateOfBirth, formatter);
+			return Period.between(dob, LocalDate.now()).getYears();
+		} catch (Exception e) {
+			logger.error("Error {}", e);
+			return -1; // Return -1 if parsing fails
+		}
+	}
+
+	public static class OddLengthFilterFn extends DoFn<String, String> {
+		@ProcessElement
+		public void processElement(@Element String message, OutputReceiver<String> out) {
+			ObjectMapper objectMapper = new ObjectMapper();
+			try {
 				Person person = objectMapper.readValue(message, Person.class);
-				
+
 				int age = calculateAge(person.getDateOfBirth());
-                
+
 				if (age != -1 && age % 2 != 0) {
-	                out.output("Age is odd and age is ="+age);
-	            }
+					out.output("Age is odd and age is =" + age);
+				}
 			} catch (Exception e) {
-				logger.error("Error {}",e);
+				logger.error("Error {}", e);
 				out.output("exception occured");
 			}
-        }
-    }
+		}
+	}
 
 }
