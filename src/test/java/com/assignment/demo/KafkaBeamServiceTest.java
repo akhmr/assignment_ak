@@ -1,47 +1,78 @@
 package com.assignment.demo;
 
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
+import java.util.Collections;
 
-import org.apache.beam.sdk.transforms.DoFn.OutputReceiver;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.apache.beam.sdk.options.PipelineOptionsFactory;
+import org.apache.beam.sdk.testing.PAssert;
+import org.apache.beam.sdk.testing.TestPipeline;
+import org.apache.beam.sdk.testing.TestPipelineOptions;
+import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.values.KV;
+import org.apache.beam.sdk.values.PCollection;
+import org.junit.BeforeClass;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
-import com.assignment.service.KafkaBeamService.EvenLengthFilterFn;
-import com.assignment.service.KafkaBeamService.OddLengthFilterFn;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.assignment.service.KafkaBeamService.ProcessedMessageFn;
 
-@SpringBootTest
+@RunWith(JUnit4.class)
 public class KafkaBeamServiceTest {
-	
-	private EvenLengthFilterFn evenLengthFilterFn;
-	private OddLengthFilterFn oddLengthFilterFn;
-    private ObjectMapper objectMapper;
 
-    @BeforeEach
-    public void setUp() {
-        evenLengthFilterFn = new EvenLengthFilterFn();
-        oddLengthFilterFn = new OddLengthFilterFn();
-        objectMapper = new ObjectMapper();
+	@Rule
+    public final TestPipeline pipeline = TestPipeline.create();
+   // Pipeline pipeline = TestPipeline.create();
+
+    @BeforeClass
+    public static void setUp() {
+        PipelineOptionsFactory.register(TestPipelineOptions.class);
     }
 
     @Test
-    public void testEvenAgeProcessing() throws Exception {
-        String validMessage = "{ \"dateOfBirth\": \"01/01/1990\" }"; 
-        OutputReceiver<String> mockOutputReceiver = mock(OutputReceiver.class);
-        evenLengthFilterFn.processElement(validMessage, mockOutputReceiver);
-        verify(mockOutputReceiver).output("Age is even and age is =34"); 
+    public void testValidEvenAgeMessage() {
+        String validJson = "{\"name\":\"John\", \"dateOfBirth\":\"01/01/2000\"}";
+        PCollection<KV<String, String>> output = pipeline
+            .apply("Create", Create.of(validJson))
+            .apply("Process", ParDo.of(new ProcessedMessageFn()));
+
+        PAssert.that(output)
+               .containsInAnyOrder(
+                   KV.of("odd", "Age is odd and age is =25")
+               );
+
+        pipeline.run();
     }
+    
     @Test
-    public void testOddAgeProcessing() throws Exception {
-        String validMessage = "{ \"dateOfBirth\": \"01/01/1989\" }"; 
-        OutputReceiver<String> mockOutputReceiver = mock(OutputReceiver.class);
-        oddLengthFilterFn.processElement(validMessage, mockOutputReceiver);
-        verify(mockOutputReceiver).output("Age is odd and age is =35"); 
+    public void testValidOddAgeMessage() {
+        String validJson = "{\"name\":\"John\", \"dateOfBirth\":\"01/01/2001\"}";
+        PCollection<KV<String, String>> output = pipeline
+            .apply("Create", Create.of(validJson))
+            .apply("Process", ParDo.of(new ProcessedMessageFn()));
+
+        PAssert.that(output)
+               .containsInAnyOrder(
+                   KV.of("even", "Age is even and age is =24")
+               );
+
+        pipeline.run();
     }
+    
+    @Test
+    public void testInvalidJson() {
+        String invalidJson = "invalid json string";
 
+        PCollection<KV<String, String>> output = pipeline
+            .apply("Create", Create.of(invalidJson))
+            .apply("Process", ParDo.of(new ProcessedMessageFn()));
 
+        PAssert.that(output)
+               .containsInAnyOrder(
+                   KV.of("error", "exception occurred")
+               );
 
-
+        pipeline.run();
+    }
 }

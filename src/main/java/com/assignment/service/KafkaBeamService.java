@@ -10,19 +10,18 @@ import org.apache.beam.sdk.io.kafka.KafkaIO;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.GroupByKey;
 import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
-import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import com.assignment.controller.DataController;
 import com.assignment.controller.Person;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -52,46 +51,69 @@ public class KafkaBeamService {
 		Pipeline pipeline = Pipeline.create(options);
 
 		PCollection<String> messages = pipeline
-				.apply(KafkaIO.<String, String>read().withBootstrapServers(bootstrapServers).withTopic(inputTopic)
-						.withKeyDeserializer(StringDeserializer.class).withValueDeserializer(StringDeserializer.class)
+				.apply(KafkaIO.<String, String>read()
+						.withBootstrapServers(bootstrapServers)
+						.withTopic(inputTopic)
+						.withKeyDeserializer(StringDeserializer.class)
+						.withValueDeserializer(StringDeserializer.class)
 						.withoutMetadata())
 				.apply(MapElements.into(TypeDescriptor.of(String.class)).via((kafkaRecord) -> kafkaRecord.getValue()));
+		
+		PCollection<KV<String, String>> processedMessages = messages.apply("ProcessedMessagesByAge",
+				ParDo.of(new ProcessedMessageFn()));
+		PCollection<KV<String, Iterable<String>>> groupedMessages = processedMessages.apply("GroupByAgeType",
+				GroupByKey.create());
 
-		PCollection<String> evenMessages = messages.apply("FilterEvenLength", ParDo.of(new EvenLengthFilterFn()));
-		PCollection<String> oddMessages = messages.apply("FilterOddLength", ParDo.of(new OddLengthFilterFn()));
-
-		evenMessages.apply("WriteEvenMessagesToKafka",
-				KafkaIO.<String, String>write().withBootstrapServers(bootstrapServers).withTopic(evenTopic)
-						.withKeySerializer(StringSerializer.class).withValueSerializer(StringSerializer.class)
-						.values());
-
-		oddMessages.apply("WriteOddMessagesToKafka",
-				KafkaIO.<String, String>write().withBootstrapServers(bootstrapServers).withTopic(oddTopic)
-						.withKeySerializer(StringSerializer.class).withValueSerializer(StringSerializer.class)
-						.values());
+		groupedMessages.apply("WriteEvenMessagesToKafka", ParDo.of(new WriteToKafkaFn(evenTopic, oddTopic)));
 
 		new Thread(() -> pipeline.run().waitUntilFinish()).start();
 	}
 
-	public static class EvenLengthFilterFn extends DoFn<String, String> {
+	public static class ProcessedMessageFn extends DoFn<String, KV<String, String>> {
 		@ProcessElement
-		public void processElement(@Element String message, OutputReceiver<String> out) {
-
+		public void processElement(@Element String message, OutputReceiver<KV<String, String>> out) {
 			ObjectMapper objectMapper = new ObjectMapper();
 			try {
 				Person person = objectMapper.readValue(message, Person.class);
 				int age = calculateAge(person.getDateOfBirth());
 
-				if (age != -1 && age % 2 == 0) {
-					out.output("Age is even and age is =" + age);
+				if (age != -1) {
+					if (age % 2 == 0) {
+						out.output(KV.of("even", "Age is even and age is =" + age));
+					} else {
+						out.output(KV.of("odd", "Age is odd and age is =" + age));
+					}
 				}
 			} catch (Exception e) {
-				e.printStackTrace();
-				out.output("exception occured");
+				logger.error("Error occurred while processing message: {}", e.getMessage());
+				out.output(KV.of("error", "exception occurred"));
 			}
+		}
+	}
 
+	public static class WriteToKafkaFn extends DoFn<KV<String, Iterable<String>>, Void> {
+
+		private final String evenTopic;
+		private final String oddTopic;
+
+		public WriteToKafkaFn(String evenTopic, String oddTopic) {
+			this.evenTopic = evenTopic;
+			this.oddTopic = oddTopic;
 		}
 
+		@ProcessElement
+		public void processElement(@Element KV<String, Iterable<String>> groupedMessages, OutputReceiver<Void> out) {
+			String key = groupedMessages.getKey();
+			Iterable<String> messages = groupedMessages.getValue();
+			String topic = (key.equals("even")) ? evenTopic : (key.equals("odd")) ? oddTopic : null;
+			if (topic != null) {
+				for (String message : messages) {
+					logger.info("Sending message to {} topic: {}", topic, message);
+				}
+			} else {
+				logger.error("Unknown key for grouping: {}", key);
+			}
+		}
 	}
 
 	private static int calculateAge(String dateOfBirth) {
@@ -102,25 +124,6 @@ public class KafkaBeamService {
 		} catch (Exception e) {
 			logger.error("Error {}", e);
 			return -1; // Return -1 if parsing fails
-		}
-	}
-
-	public static class OddLengthFilterFn extends DoFn<String, String> {
-		@ProcessElement
-		public void processElement(@Element String message, OutputReceiver<String> out) {
-			ObjectMapper objectMapper = new ObjectMapper();
-			try {
-				Person person = objectMapper.readValue(message, Person.class);
-
-				int age = calculateAge(person.getDateOfBirth());
-
-				if (age != -1 && age % 2 != 0) {
-					out.output("Age is odd and age is =" + age);
-				}
-			} catch (Exception e) {
-				logger.error("Error {}", e);
-				out.output("exception occured");
-			}
 		}
 	}
 
